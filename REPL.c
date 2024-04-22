@@ -72,6 +72,13 @@ typedef struct
     uint32_t num_rows;
     Pager* pager;
 } Table;
+
+typedef struct{
+    Table* table;
+    bool end_of_table;
+    uint32_t row_num;
+}Cursor;
+
 const uint32_t ID_SIZE = size_of_attribute(Row, id);
 const uint32_t USERNAME_SIZE = size_of_attribute(Row, username);
 const uint32_t EMAIL_SIZE = size_of_attribute(Row, email);
@@ -82,6 +89,22 @@ const uint32_t ROW_SIZE = ID_SIZE + USERNAME_SIZE + EMAIL_SIZE;
 const uint32_t PAGE_SIZE = 4096;
 const uint32_t ROWS_PER_PAGE = PAGE_SIZE / ROW_SIZE;
 const uint32_t TABLE_MAX_ROWS = ROWS_PER_PAGE * TABLE_MAX_PAGES;
+
+Cursor* table_start(Table* table){
+    Cursor* cursor = malloc(sizeof(Cursor));
+    cursor->table=table;
+    cursor->row_num=0;
+    cursor->end_of_table = (table->num_rows==0);
+    return cursor;
+}
+Cursor* table_end(Table* table){
+    Cursor* cursor = malloc(sizeof(Cursor));
+    cursor->table = table;
+    cursor->row_num= table->num_rows;
+    cursor->end_of_table = true;
+    return cursor;
+}
+
 void* get_page(Pager *pager,uint32_t page_num){
     if(page_num>TABLE_MAX_PAGES){
         printf("Tried to fetch page number out of bounds. %d > %d\n", page_num,
@@ -110,18 +133,25 @@ void* get_page(Pager *pager,uint32_t page_num){
     return pager->pages[page_num];
 
 }
-void *row_slot(Table *table, uint32_t row_num)
-{
+void *cursor_value(Cursor* cursor)
+{   uint32_t row_num = cursor->row_num;
     uint32_t page_num = row_num / ROWS_PER_PAGE;
-    void *page = get_page(table->pager,page_num);
+    void *page = get_page(cursor->table->pager,page_num);
     uint32_t row_offset = row_num % ROWS_PER_PAGE;
     uint32_t byte_offset = row_offset * ROW_SIZE;
     return page + byte_offset;
 }
+void cursor_advance(Cursor* cursor){
+    cursor->row_num +=1;
+    if(cursor->row_num>=cursor->table->num_rows){
+        cursor->end_of_table = true;
+    }
+}
 Pager* pager_open(const char* filename){
-    int fd = open(filename,O_RDWR|O_CREAT|S_IWUSR|S_IRUSR);
+    int fd = open(filename,O_RDWR|O_CREAT,S_IWUSR|S_IRUSR);
     if(fd==-1){
         printf("Unable to open file\n");
+         printf("Error code: %d\n", errno);
         exit(EXIT_FAILURE);
     }
     off_t file_length = lseek(fd,0,SEEK_END);
@@ -170,7 +200,7 @@ void db_close(Table* table){
     Pager* pager = table->pager;
     uint32_t num_full_pages = table->num_rows/ROWS_PER_PAGE;
     for (uint32_t i=0;i<num_full_pages;i++){
-        if(pager->pages[i]){
+        if(pager->pages[i]!=NULL){
             pager_flush(pager,i,PAGE_SIZE);
             free(pager->pages[i]);
             pager->pages[i]=NULL;
@@ -180,7 +210,7 @@ void db_close(Table* table){
     uint32_t num_additional_rows = table->num_rows%ROWS_PER_PAGE;
     if(num_additional_rows > 0){
         uint32_t page_num = num_full_pages;
-        if (pager->pages[page_num] != NULL) { pager_flush(pager,page_num,PAGE_SIZE);
+        if (pager->pages[page_num] != NULL) { pager_flush(pager,page_num,num_additional_rows*ROW_SIZE);
         free(pager->pages[page_num]);
         pager->pages[page_num]=NULL;}
     }
@@ -299,23 +329,29 @@ PrepareResult prepare_statement(InputBuffer *input_buffer, Statement *statement)
 }
 ExecuteResult execute_insert(Statement *statement, Table *table)
 {
+
     if (table->num_rows >= TABLE_MAX_PAGES)
     {
         return EXECUTE_TABLE_FULL;
     }
     Row *row_to_insert = &statement->row_to_insert;
-    serialize_row(row_slot(table, table->num_rows), row_to_insert);
+    Cursor* cursor = table_end(table);
+    serialize_row(cursor_value(cursor), row_to_insert);
     table->num_rows += 1;
+    free(cursor);
     return EXECUTE_SUCCESS;
 }
 ExecuteResult execute_select(Statement *statement, Table *table)
 {
     Row row;
+    Cursor* cursor = table_start(table);
     for (uint32_t i = 0; i < table->num_rows; i++)
     {
-        desearile_row(row_slot(table, i), &row);
+        desearile_row(cursor_value(cursor), &row);
         print_row(&row);
+        cursor_advance(cursor);
     }
+    free(cursor);
     return EXECUTE_SUCCESS;
 }
 

@@ -1,6 +1,4 @@
-Certainly! Below is the GitHub README for your code:
 
----
 
 # Simple Database Implementation in C
 
